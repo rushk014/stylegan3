@@ -1,0 +1,21 @@
+# Python generated files and directories
+__pycache__/
+*.pyc
+
+# Virtual Environment Folders (if applicable, though you are using Conda now)
+venv/
+.venv/
+*.egg-info/
+
+# Project-specific large or generated files
+# Your custom files/folders that should not be committed:
+models/
+saved_vectors/
+input/
+output/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+.DS_Store

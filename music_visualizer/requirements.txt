@@ -1,0 +1,15 @@
+# --- StyleGAN3 Dependencies ---
+torch
+numpy
+scipy
+Pillow       # For robust image handling
+click        # Required by official StyleGAN3 utils
+requests     # Used by dnnlib for opening URL checkpoints
+
+# --- Your Existing Visualizer Dependencies ---
+moviepy>=2.2.1
+tqdm
+librosa
+sentence-transformers
+gensim
+ninja
