@@ -1,5 +1,7 @@
 import librosa
 import numpy as np
+import os
+from typing import List, Union 
 
 W_DIM = 512
 
@@ -47,167 +49,124 @@ def smooth(class_vectors,smooth_factor):
 
 
 def generate_w_vectors(y, sr, 
-                       tempo_sensitivity, 
+                       walk_rate_sensitivity, 
                        pitch_sensitivity, 
                        melodic_sensitivity, 
                        sax_sensitivity, 
                        chroma_content_sensitivity, 
                        truncation, 
                        frame_length, 
-                       drift_magnitude, 
-                       num_ws, w_dim, jitter, preload=False):
+                       noise_floor_magnitude, 
+                       jump_threshold, 
+                       num_ws, w_dim, jitter, preload=False, 
+                       w_avg_vec: Union[np.ndarray, None] = None):
     if preload:
         return np.load('saved_vectors/w_vectors.npy')
 
-    # --- Feature Extraction (Audio Features) ---
+    # --- Feature Extraction ---
     spec, spec_mean, grad_mean = generate_power(y, sr, frame_length)
     chroma = generate_chroma(y, sr, frame_length)
-    chroma_delta = generate_chroma_delta(chroma)
     
-    # --- Mid-Frequency and High-Frequency Energy ---
+    # Mid-Frequency and High-Frequency Energy (CRITICAL PLACEMENT)
     cqt_freqs = librosa.cqt_frequencies(n_bins=spec.shape[0], fmin=librosa.note_to_hz('C1'))
-
-    MF_START_FREQ = 300     
-    MF_END_FREQ = 3500      
+    
+    MF_START_FREQ = 300; MF_END_FREQ = 3500      
     mf_indices = np.where((cqt_freqs >= MF_START_FREQ) & (cqt_freqs <= MF_END_FREQ))[0]
     raw_mf_energy = np.sum(spec[mf_indices, :], axis=0)
-    log_mf_energy = np.log1p(raw_mf_energy)
-    if log_mf_energy.max() > log_mf_energy.min():
-        mid_frequency_magnitude = (log_mf_energy - log_mf_energy.min()) / (log_mf_energy.max() - log_mf_energy.min())
-    else:
-        mid_frequency_magnitude = np.zeros_like(log_mf_energy)
+    mid_frequency_magnitude = (np.log1p(raw_mf_energy) - np.min(np.log1p(raw_mf_energy))) / (np.ptp(np.log1p(raw_mf_energy)) if np.ptp(np.log1p(raw_mf_energy)) > 0 else 1)
 
-    HF_START_FREQ = 5000 
-    HF_END_FREQ = 10000
+    HF_START_FREQ = 5000; HF_END_FREQ = 10000
     hf_indices = np.where((cqt_freqs >= HF_START_FREQ) & (cqt_freqs <= HF_END_FREQ))[0]
     raw_hf_energy = np.sum(spec[hf_indices, :], axis=0)
-    log_hf_energy = np.log1p(raw_hf_energy)
-    if log_hf_energy.max() > log_hf_energy.min():
-        hf_energy_magnitude = (log_hf_energy - log_hf_energy.min()) / (log_hf_energy.max() - log_hf_energy.min())
-    else:
-        hf_energy_magnitude = np.zeros_like(log_hf_energy)
+    hf_energy_magnitude = (np.log1p(raw_hf_energy) - np.min(np.log1p(raw_hf_energy))) / (np.ptp(np.log1p(raw_hf_energy)) if np.ptp(np.log1p(raw_hf_energy)) > 0 else 1)
+    
+    # 2. Define Stable Anchor Points (W_ANCHORS)
+    if w_avg_vec is None:
+        w_avg_vec = np.zeros(w_dim, dtype=np.float32)
+        print("Warning: W_AVG not supplied. Defaulting to zero vector, which may cause artifacts.")
 
-    # 2. Initialize W vector
-    w_base = np.clip(np.random.randn(w_dim) * truncation, -truncation, truncation)
+    PERTURBATION_MAGNITUDE = 1.0
+    NUM_ANCHORS = 6
 
-    # CRITICAL FIX: Reset W_base much closer to center (0,0,0) for a stable start
-    w_base *= 0.1
+    W_ANCHORS: List[np.ndarray] = []
+    for _ in range(NUM_ANCHORS):
+        random_noise = np.random.randn(w_dim).astype(np.float32)
+        w_anchor = w_avg_vec + (random_noise * PERTURBATION_MAGNITUDE)
+        W_ANCHORS.append(w_anchor)
+    
+    # --- ANCHOR SAVING BLOCK REMAINS ---
+    anchor_ws_plus: List[np.ndarray] = []
+    for anchor in W_ANCHORS:
+        anchor_ws_plus.append(np.repeat(anchor[np.newaxis, :], num_ws, axis=0))
+
+    os.makedirs('saved_vectors', exist_ok=True)
+    np.save('saved_vectors/anchor_ws_check.npy', np.array(anchor_ws_plus, dtype=np.float32))
+    # ----------------------------------------------------
+
+    # --- MOVEMENT SCALING COEFFICIENTS ---
+    BASE_WALK_RATE = 0.005 # Base walk speed
+    RHYTHM_ACCELERATION_SCALE = walk_rate_sensitivity 
+    CHROMA_ACCELERATION_SCALE = 0.05 
+    # JUMP_THRESHOLD is the external parameter (jump_threshold)
+    # -------------------------------------------------------------
+    
+    lerp_progress = 0.0 
     
     ws = []
-    update_dir = np.where(w_base < 0, 1, -1)
     
-    # --- Jitter Vetting Logic ---
-    JITTER_EXPECTED_MEAN = 1 - (jitter / 2) 
-    TOLERANCE = 0.05 
-    JITTER_VECTOR_COARSE = None # New separate jitter vector
-    JITTER_VECTOR_MIDDLE = None # New separate jitter vector
-    
-    vetting_attempts = 0
-    # Vet only one vector to save computation, then copy it.
-    while True:
-        JITTER_VECTOR_COARSE = get_sensitivity(jitter=jitter)
-        vetting_attempts += 1
-        if np.abs(np.mean(JITTER_VECTOR_COARSE) - JITTER_EXPECTED_MEAN) <= TOLERANCE:
-            JITTER_VECTOR_MIDDLE = get_sensitivity(jitter=jitter) # Generate second one only after first succeeds
-            break
-        if vetting_attempts > 100:
-            print(f"Warning: Failed to meet Jitter threshold after 100 attempts.")
-            JITTER_VECTOR_MIDDLE = get_sensitivity(jitter=jitter) # Fallback
-            break
-    print(f"Jitter Vetting complete in {vetting_attempts} attempts.")
-    
-    w_coarse = w_base.copy() 
-    w_middle = w_base.copy() 
-    
-    # --- DAMPING CONSTANTS ---
-    DAMPING_FACTOR_ACCUMULATION = 1000 
-    DAMPING_FACTOR_PUNCH = 5            
-    SUPER_PUNCH_THRESHOLD = 0.5 
-    
-    # --- Damping Factors ---
-    DAMPING_FACTOR_MELODY = DAMPING_FACTOR_ACCUMULATION * 1.5 
-    
-    # CRITICAL FIX: Middle layer movement must be much stronger than Coarse.
-    # Division by 100 instead of 1000 allows for visible color shifts.
-    DAMPING_FACTOR_SAX = 100.0
-    DAMPING_FACTOR_CHROMA_CONTENT = 100.0
-    # -----------------------------
-
     for f in range(len(spec_mean)):
-        # --- 1. Calculate Magnitudes (Use externalized sensitivities) ---
-        rhythm_magnitude = tempo_sensitivity * grad_mean[f]
-        melodic_magnitude = spec_mean[f] * melodic_sensitivity 
+        # --- 1. Feature Magnitudes ---
+        rhythm_magnitude = grad_mean[f] * RHYTHM_ACCELERATION_SCALE # Used for both fractional shift and jump check
         sax_magnitude = mid_frequency_magnitude[f] * sax_sensitivity 
         chroma_content_magnitude = np.sum(chroma[:, f]) * chroma_content_sensitivity 
-        flicker_magnitude = hf_energy_magnitude[f] * 0.005 
+        
+        # --- 2. JUMP LOGIC (Non-Adjacent Anchor Hops) ---
+        if rhythm_magnitude > jump_threshold:
+            # Jump 1 (adjacent) to 3 (non-adjacent) anchors ahead
+            jump_steps = np.random.randint(1, 4) 
+            lerp_progress += jump_steps
+        
+        # --- 3. Circular Path Update (Base Walk and Fractional Acceleration) ---
+        progress_shift = BASE_WALK_RATE + (rhythm_magnitude * RHYTHM_ACCELERATION_SCALE) 
+        progress_shift += (sax_magnitude * CHROMA_ACCELERATION_SCALE)
+        
+        lerp_progress += progress_shift
+        
+        # --- 4. Determine Current Anchor Points and Fraction ---
+        start_index = int(np.floor(lerp_progress)) % NUM_ANCHORS
+        target_index = (start_index + 1) % NUM_ANCHORS
+        lerp_fraction = lerp_progress - np.floor(lerp_progress)
 
-        # Allocate drift: 90% for pose/color, 10% for detail
-        base_drift_coarse = np.random.randn(w_dim) * drift_magnitude # Decouple drift
-        base_drift_middle = np.random.randn(w_dim) * drift_magnitude
+        W_START = W_ANCHORS[start_index]
+        W_TARGET = W_ANCHORS[target_index]
         
-        # --- Adaptive Damping Logic for RHYTHM ---
-        beat_strength = grad_mean[f] 
-        if beat_strength > SUPER_PUNCH_THRESHOLD:
-            current_damping_rhythm = DAMPING_FACTOR_PUNCH
-        else:
-            current_damping_rhythm = DAMPING_FACTOR_ACCUMULATION
+        # --- 5. LERP Interpolation ---
+        w_coarse_current = W_START * (1 - lerp_fraction) + W_TARGET * lerp_fraction
         
-        # ------------------------------------------------------------------
-        # --- W_COARSE (Layers 0-3): STRUCTURE/POSE DRIVERS ---
-        # ------------------------------------------------------------------
+        color_shift = (chroma_content_magnitude * 0.1) 
+        w_middle_fraction = np.clip(lerp_fraction + color_shift, 0, 1)
+        w_middle_current = W_START * (1 - w_middle_fraction) + W_TARGET * w_middle_fraction
         
-        # 1. CORE RHYTHM MOVEMENT: (Piano attacks)
-        rhythmic_movement = np.full(w_dim, rhythm_magnitude / current_damping_rhythm) * update_dir * JITTER_VECTOR_COARSE
-        w_coarse += rhythmic_movement
+        # --- 6. PSYCHEDELIC NOISE INJECTION (BIGGAN STYLE) ---
         
-        # 2. MELODIC/SUSTAINED MOVEMENT: (General mood/brightness)
-        melodic_movement = np.full(w_dim, melodic_magnitude / DAMPING_FACTOR_MELODY) * update_dir * JITTER_VECTOR_COARSE
-        w_coarse += melodic_movement
+        noise_injection_magnitude = noise_floor_magnitude + (spec_mean[f] * 0.5) 
         
-        # 3. TARGETED CHROMA NUDGE: (Small, direct color bias for key changes)
-        chroma_delta_power = np.sum(chroma_delta[:, f]) * pitch_sensitivity / 50 
-        w_coarse[:12] += chroma_delta[:12, f] * chroma_delta_power * 0.2
+        w_fine_base = w_coarse_current.copy() 
         
-        # ------------------------------------------------------------------
-        # --- W_MIDDLE (Layers 4-7): STYLE/COLOR DRIVERS ---
-        # ------------------------------------------------------------------
-        
-        # 4. SAXOPHONE DRIVER: (Sustained melody color shift)
-        sax_movement = np.full(w_dim, sax_magnitude / DAMPING_FACTOR_SAX) * update_dir * JITTER_VECTOR_MIDDLE # Use middle jitter
-        w_middle += sax_movement 
-        
-        # 5. CHROMA CONTENT DRIVER: (Absolute Pitch Power for rapid color swap)
-        chroma_content_movement = np.full(w_dim, chroma_content_magnitude / DAMPING_FACTOR_CHROMA_CONTENT) * update_dir * JITTER_VECTOR_MIDDLE # Use middle jitter
-        w_middle += chroma_content_movement
-        
-        # ------------------------------------------------------------------
-        # --- FINAL CLIPPING AND W+ CONSTRUCTION ---
-        # ------------------------------------------------------------------
-        
-        # Apply Non-Musical Drift and clip accumulation vectors
-        w_coarse = np.clip(w_coarse + base_drift_coarse, -truncation, truncation) # Use coarse drift
-        w_middle = np.clip(w_middle + base_drift_middle, -truncation, truncation) # Use middle drift
-        
-        # 6. FINE (Layers 8+): Detail/Noise 
-        # CRITICAL FIX: Base w_fine on w_coarse (stable pose) to reduce noise.
-        w_fine_base = w_coarse.copy() 
-        w_fine_movement = np.random.randn(w_dim) * flicker_magnitude * 0.5 
+        w_fine_movement = np.random.randn(w_dim) * noise_injection_magnitude 
         w_fine = np.clip(w_fine_base + w_fine_movement, -truncation, truncation)
         
         # --- W+ Vector Concatenation ---
-        coarse_ws = np.repeat(w_coarse[np.newaxis, :], 4, axis=0) 
-        middle_ws = np.repeat(w_middle[np.newaxis, :], 4, axis=0) 
+        coarse_ws = np.repeat(w_coarse_current[np.newaxis, :], 4, axis=0) 
+        middle_ws = np.repeat(w_middle_current[np.newaxis, :], 4, axis=0) 
         fine_ws = np.repeat(w_fine[np.newaxis, :], num_ws - 8, axis=0)
         
         w_plus = np.concatenate([coarse_ws, middle_ws, fine_ws], axis=0)
         
         if w_plus.shape[0] != num_ws:
-            w_plus = np.repeat(w_middle[np.newaxis, :], num_ws, axis=0)
+            w_plus = np.repeat(w_middle_current[np.newaxis, :], num_ws, axis=0)
             
         ws.append(w_plus)
-        
-        # Use coarse W for direction reversal check
-        update_dir = new_update_dir(w_coarse, update_dir, tempo_sensitivity, truncation)
     
-    np.save('saved_vectors/w_vectors.npy', np.array(ws))
-    return np.array(ws)
+    np.save('saved_vectors/w_vectors.npy', np.array(ws, dtype=np.float32)) 
+    return np.array(ws, dtype=np.float32)

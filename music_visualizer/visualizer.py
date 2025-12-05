@@ -8,6 +8,7 @@ import legacy
 import json
 from moviepy import AudioFileClip, ImageSequenceClip
 import time
+import numpy as np 
 
 # Update the utility function import
 from .utils import generate_w_vectors, get_frame_lim, W_DIM
@@ -28,7 +29,10 @@ def setup_parser():
     
     # --- EXTERNALIZED SENSITIVITY ARGUMENTS ---
     parser.add_argument("-ps", "--pitch_sensitivity", type=int, default=defaults.get("pitch_sensitivity", 150), metavar="[50-400]", help="controls the sensitivity of the CHROMA NUDGE to changes in pitch")
-    parser.add_argument("-ts", "--tempo_sensitivity", type=float, default=defaults.get("tempo_sensitivity", 0.15), metavar="[0.05-0.8]", help="controls the base sensitivity of the RHYTHM driver")
+    
+    # Renamed/Re-purposed Argument: Now controls rhythmic acceleration
+    parser.add_argument("-wrs", "--walk_rate_sensitivity", type=float, default=defaults.get("walk_rate_sensitivity", 0.15), metavar="[0.05-0.8]", help="controls how strongly RHYTHMIC HITS accelerate the morph speed (BASE_WALK_RATE in utils.py)")
+    
     parser.add_argument("-ms", "--melodic_sensitivity", type=float, default=defaults.get("melodic_sensitivity", 0.5), metavar="[0.05-1.0]", help="controls the sensitivity of the general MELODIC/LOUDNESS driver")
     parser.add_argument("-sas", "--sax_sensitivity", type=float, default=defaults.get("sax_sensitivity", 0.2), metavar="[0.05-1.0]", help="controls the sensitivity of the MID-FREQUENCY (Saxophone) driver")
     parser.add_argument("-ccs", "--chroma_content_sensitivity", type=float, default=defaults.get("chroma_content_sensitivity", 0.1), metavar="[0.01-0.5]", help="controls the sensitivity of the CHROMA CONTENT (note-swap) driver")
@@ -40,7 +44,16 @@ def setup_parser():
     parser.add_argument("-bs", "--batch_size", type=int, default=defaults.get("batch_size", 8), help="Batch size for GPU generation")
     parser.add_argument("-o", "--output_file", default="", help="name of output file stored in output/, defaults to [--song] path base_name")
     parser.add_argument("-sr", "--sample_rate", type=int, default=defaults.get("sample_rate", 22050), metavar="[11025, 22050, 44100]", help="Sample rate for audio analysis (affects FPS and fidelity)")
-    parser.add_argument("-dm", "--drift_magnitude", type=float, default=defaults.get("drift_magnitude", 0.0005), metavar="[0.00001-0.05]", help="magnitude of drift applied to noise vector per frame")
+    
+    # --- REMOVED VESTIGIAL ARGUMENT: drift_magnitude ---
+
+    # --- NEW CRITICAL ARGUMENT: JUMP THRESHOLD ---
+    parser.add_argument("-jt", "--jump_threshold", type=float, default=defaults.get("jump_threshold", 0.4), metavar="[0.1-1.0]", help="normalized rhythm intensity needed to trigger a non-adjacent jump")
+    # ---------------------------------------------
+
+    # --- NEW CRITICAL ARGUMENT: NOISE FLOOR MAGNITUDE ---
+    parser.add_argument("-nfm", "--noise_floor_magnitude", type=float, default=defaults.get("noise_floor_magnitude", 0.1), metavar="[0.05-0.5]", help="base magnitude of random noise injected into fine layers for psychedelic texture")
+    # ----------------------------------------------------
 
     parser.add_argument("--use_last_vectors", action="store_true", default=False, help="set flag to use previous saved class/noise vectors")
     return parser
@@ -56,7 +69,8 @@ def visualize(w_vectors, model, batch_size, frame_lim):
             break
         
         # W+ vector batch shape: [batch_size, num_ws, W_DIM]
-        w_batch = w_vectors[i*batch_size:(i+1)*batch_size]
+        # Ensure w_batch is on the same device and is float32
+        w_batch = w_vectors[i*batch_size:(i+1)*batch_size].float()
         
         with torch.no_grad():
             output = synthesis_net(w_batch, noise_mode='const')
@@ -77,20 +91,24 @@ if __name__ == '__main__':
     # --- PARAMS FROM ARGS ---
     song = args.song
     frame_length = args.frame_length
-    # Note: These are now the actual sensitivities passed through
-    pitch_sensitivity = args.pitch_sensitivity # Used for chroma nudge
-    tempo_sensitivity = args.tempo_sensitivity
+    pitch_sensitivity = args.pitch_sensitivity
+    
+    # Renamed/Re-purposed Argument
+    walk_rate_sensitivity = args.walk_rate_sensitivity
+    
     melodic_sensitivity = args.melodic_sensitivity
     sax_sensitivity = args.sax_sensitivity
     chroma_content_sensitivity = args.chroma_content_sensitivity
-    
     jitter = args.jitter
     batch_size = args.batch_size
     use_last_vectors = args.use_last_vectors
     truncation = args.truncation
     sr_to_use = args.sample_rate
-    drift_magnitude = args.drift_magnitude
-    # ------------------------
+    
+    # New Arguments
+    noise_floor_magnitude = args.noise_floor_magnitude
+    jump_threshold = args.jump_threshold
+    # -------------------------
 
     # ensure necessary directories exist
     os.makedirs('saved_vectors', exist_ok=True)
@@ -125,28 +143,34 @@ if __name__ == '__main__':
     network_pkl = 'models/stylegan3-t-ffhqu-256x256.pkl'
     print(f'Loading networks from "{network_pkl}"...')
     with dnnlib.util.open_url(network_pkl) as f:
-        G = legacy.load_network_pkl(f)['G_ema']
+        data = legacy.load_network_pkl(f)
     
+    G = data['G_ema']
+    # CRITICAL FIX 1: Extract the W_AVG vector from the mapping network
+    W_AVG = G.mapping.w_avg.cpu().numpy()
+
     model = G.to(device)
     NUM_WS = model.num_ws
 
     print('Generating W+ vectors \n')
     
-    # --- PASS ALL NEW SENSITIVITY ARGUMENTS TO UTILS ---
+    # --- PASS ALL ARGUMENTS TO UTILS ---
     w_vectors = generate_w_vectors(
         y, sr, 
-        tempo_sensitivity, 
+        walk_rate_sensitivity, # PASSED RENAME HERE
         pitch_sensitivity, 
         melodic_sensitivity, 
         sax_sensitivity, 
         chroma_content_sensitivity, 
         truncation, 
         frame_length, 
-        drift_magnitude, 
+        noise_floor_magnitude, 
+        jump_threshold, # PASSED NEW ARGUMENT HERE
         NUM_WS, 
         W_DIM, 
         jitter, 
-        use_last_vectors
+        use_last_vectors,
+        W_AVG
     )
     
     w_vectors = torch.Tensor(w_vectors) 

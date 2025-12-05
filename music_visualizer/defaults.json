@@ -1,14 +1,15 @@
 {
-    "song": "input/peaceful.mp3",
+    "song": "input/thisoldhouse.mp3",
     "pitch_sensitivity": 200,
-    "tempo_sensitivity": 0.1,
+    "walk_rate_sensitivity": 0.15,
     "melodic_sensitivity": 0.25,
     "sax_sensitivity": 0.15,
     "chroma_content_sensitivity": 0.05,
     "jitter": 0.2,
     "frame_length": 512,
-    "truncation": 0.9,
+    "truncation": 0.6,
     "batch_size": 8,
     "sample_rate": 22050,
-    "drift_magnitude": 0.0005
+    "noise_floor_magnitude": 0.1,
+    "jump_threshold": 0.4
 }
