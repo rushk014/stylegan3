@@ -67,25 +67,23 @@ def generate_w_vectors(y, sr,
     spec, spec_mean, grad_mean = generate_power(y, sr, frame_length)
     chroma = generate_chroma(y, sr, frame_length)
     
-    # Mid-Frequency and High-Frequency Energy (CRITICAL PLACEMENT)
+    # CRITICAL FIX: CALCULATE SPECTRAL FLATNESS (for W_FINE noise)
+    flatness = librosa.feature.spectral_flatness(S=spec, hop_length=frame_length, power=2.0)[0]
+    spectral_flatness = (flatness - np.min(flatness)) / (np.ptp(flatness) if np.ptp(flatness) > 0 else 1)
+    
+    # Mid-Frequency and High-Frequency Energy
     cqt_freqs = librosa.cqt_frequencies(n_bins=spec.shape[0], fmin=librosa.note_to_hz('C1'))
     
     MF_START_FREQ = 300; MF_END_FREQ = 3500      
     mf_indices = np.where((cqt_freqs >= MF_START_FREQ) & (cqt_freqs <= MF_END_FREQ))[0]
     raw_mf_energy = np.sum(spec[mf_indices, :], axis=0)
-    mid_frequency_magnitude = (np.log1p(raw_mf_energy) - np.min(np.log1p(raw_mf_energy))) / (np.ptp(np.log1p(raw_mf_energy)) if np.ptp(np.log1p(raw_mf_energy)) > 0 else 1)
+    mid_frequency_magnitude = (np.log1p(raw_mf_energy) - np.min(np.log1p(raw_mf_energy)) ) / (np.ptp(np.log1p(raw_mf_energy)) if np.ptp(np.log1p(raw_mf_energy)) > 0 else 1)
 
-    HF_START_FREQ = 5000; HF_END_FREQ = 10000
-    hf_indices = np.where((cqt_freqs >= HF_START_FREQ) & (cqt_freqs <= HF_END_FREQ))[0]
-    raw_hf_energy = np.sum(spec[hf_indices, :], axis=0)
-    hf_energy_magnitude = (np.log1p(raw_hf_energy) - np.min(np.log1p(raw_hf_energy))) / (np.ptp(np.log1p(raw_hf_energy)) if np.ptp(np.log1p(raw_hf_energy)) > 0 else 1)
-    
     # 2. Define Stable Anchor Points (W_ANCHORS)
     if w_avg_vec is None:
         w_avg_vec = np.zeros(w_dim, dtype=np.float32)
-        print("Warning: W_AVG not supplied. Defaulting to zero vector, which may cause artifacts.")
 
-    PERTURBATION_MAGNITUDE = 1.0
+    PERTURBATION_MAGNITUDE = 1.0 
     NUM_ANCHORS = 6
 
     W_ANCHORS: List[np.ndarray] = []
@@ -104,29 +102,34 @@ def generate_w_vectors(y, sr,
     # ----------------------------------------------------
 
     # --- MOVEMENT SCALING COEFFICIENTS ---
-    BASE_WALK_RATE = 0.005 # Base walk speed
+    BASE_WALK_RATE = 0.001 
     RHYTHM_ACCELERATION_SCALE = walk_rate_sensitivity 
     CHROMA_ACCELERATION_SCALE = 0.05 
-    # JUMP_THRESHOLD is the external parameter (jump_threshold)
+    LOUDNESS_VOLATILITY_FACTOR = 1.0 
+
+    COLOR_BIAS_OFFSET = 0.40 # FINAL PSYCHEDELIC COLOR BIAS
+    
+    # Jitter Vectors
+    JITTER_VECTOR_COARSE = get_sensitivity(jitter=jitter)
+    JITTER_VECTOR_MIDDLE = get_sensitivity(jitter=jitter)
     # -------------------------------------------------------------
     
-    lerp_progress = 0.0 
+    # NEW SCALING FOR INDEPENDENT NOISE
+    SF_NOISE_SCALE = 0.5    # Spectral Flatness drives W_FINE (Texture/Artifacts)
+    LOUDNESS_SHIMMER_SCALE = 0.3 # Loudness drives W_MIDDLE (Color/Shimmer)
     
+    lerp_progress = 0.0 
     ws = []
     
     for f in range(len(spec_mean)):
         # --- 1. Feature Magnitudes ---
-        rhythm_magnitude = grad_mean[f] * RHYTHM_ACCELERATION_SCALE # Used for both fractional shift and jump check
+        rhythm_magnitude = grad_mean[f] * RHYTHM_ACCELERATION_SCALE 
         sax_magnitude = mid_frequency_magnitude[f] * sax_sensitivity 
         chroma_content_magnitude = np.sum(chroma[:, f]) * chroma_content_sensitivity 
         
-        # --- 2. JUMP LOGIC (Non-Adjacent Anchor Hops) ---
-        if rhythm_magnitude > jump_threshold:
-            # Jump 1 (adjacent) to 3 (non-adjacent) anchors ahead
-            jump_steps = np.random.randint(1, 4) 
-            lerp_progress += jump_steps
+        # --- 2. JUMP LOGIC REMOVED (Smooth Flow) ---
         
-        # --- 3. Circular Path Update (Base Walk and Fractional Acceleration) ---
+        # --- 3. Circular Path Update (Hyper-Fractional Acceleration) ---
         progress_shift = BASE_WALK_RATE + (rhythm_magnitude * RHYTHM_ACCELERATION_SCALE) 
         progress_shift += (sax_magnitude * CHROMA_ACCELERATION_SCALE)
         
@@ -143,17 +146,31 @@ def generate_w_vectors(y, sr,
         # --- 5. LERP Interpolation ---
         w_coarse_current = W_START * (1 - lerp_fraction) + W_TARGET * lerp_fraction
         
-        color_shift = (chroma_content_magnitude * 0.1) 
+        color_shift = (chroma_content_magnitude * 0.3) 
         w_middle_fraction = np.clip(lerp_fraction + color_shift, 0, 1)
-        w_middle_current = W_START * (1 - w_middle_fraction) + W_TARGET * w_middle_fraction
         
-        # --- 6. PSYCHEDELIC NOISE INJECTION (BIGGAN STYLE) ---
+        # Jitter applied directly to the interpolated vector for micro-motion
+        w_middle_current = (W_START * (1 - w_middle_fraction) + W_TARGET * w_middle_fraction) * JITTER_VECTOR_MIDDLE
         
-        noise_injection_magnitude = noise_floor_magnitude + (spec_mean[f] * 0.5) 
+        # APPLY FIXED COLOR BIAS 
+        w_middle_current[:5] += COLOR_BIAS_OFFSET 
         
-        w_fine_base = w_coarse_current.copy() 
+        # ------------------------------------------------------------------
+        # --- 6. INDEPENDENT NOISE INJECTION ---
         
-        w_fine_movement = np.random.randn(w_dim) * noise_injection_magnitude 
+        # A. W_MIDDLE SHIMMER (Tied to Loudness/Volume)
+        volume_shimmer_magnitude = spec_mean[f] * LOUDNESS_SHIMMER_SCALE 
+        w_middle_current += np.random.randn(w_dim) * volume_shimmer_magnitude
+        
+        # B. W_FINE TEXTURE (Tied to Spectral Flatness/Complexity)
+        complexity_texture_magnitude = spectral_flatness[f] * SF_NOISE_SCALE
+        
+        # Final noise is the floor + complexity-driven noise
+        noise_injection_magnitude = noise_floor_magnitude + complexity_texture_magnitude
+        
+        # CRITICAL: Structural Sabotage - Base w_fine on the volatile w_middle 
+        w_fine_base = w_middle_current.copy() 
+        w_fine_movement = np.random.randn(w_dim) * noise_injection_magnitude * JITTER_VECTOR_MIDDLE
         w_fine = np.clip(w_fine_base + w_fine_movement, -truncation, truncation)
         
         # --- W+ Vector Concatenation ---

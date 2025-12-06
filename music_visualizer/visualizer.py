@@ -45,15 +45,13 @@ def setup_parser():
     parser.add_argument("-o", "--output_file", default="", help="name of output file stored in output/, defaults to [--song] path base_name")
     parser.add_argument("-sr", "--sample_rate", type=int, default=defaults.get("sample_rate", 22050), metavar="[11025, 22050, 44100]", help="Sample rate for audio analysis (affects FPS and fidelity)")
     
-    # --- REMOVED VESTIGIAL ARGUMENT: drift_magnitude ---
-
-    # --- NEW CRITICAL ARGUMENT: JUMP THRESHOLD ---
+    # --- JUMP THRESHOLD (Vestigial but Retained) ---
     parser.add_argument("-jt", "--jump_threshold", type=float, default=defaults.get("jump_threshold", 0.4), metavar="[0.1-1.0]", help="normalized rhythm intensity needed to trigger a non-adjacent jump")
     # ---------------------------------------------
 
-    # --- NEW CRITICAL ARGUMENT: NOISE FLOOR MAGNITUDE ---
+    # --- NOISE FLOOR MAGNITUDE ---
     parser.add_argument("-nfm", "--noise_floor_magnitude", type=float, default=defaults.get("noise_floor_magnitude", 0.1), metavar="[0.05-0.5]", help="base magnitude of random noise injected into fine layers for psychedelic texture")
-    # ----------------------------------------------------
+    # -----------------------------
 
     parser.add_argument("--use_last_vectors", action="store_true", default=False, help="set flag to use previous saved class/noise vectors")
     return parser
@@ -114,10 +112,15 @@ if __name__ == '__main__':
     os.makedirs('saved_vectors', exist_ok=True)
     os.makedirs('output', exist_ok=True)
 
+    # --- UNIQUE FILENAME LOGIC ---
     if args.output_file:
         outname = args.output_file
     else:
-        outname = 'output/' + os.path.basename(args.song).split('.')[0] + '.mp4'
+        timestamp = time.strftime("_%Y%m%d_%H%M%S")
+        song_base_name = os.path.basename(args.song).split('.')[0]
+        outname = 'output/' + song_base_name + timestamp + '.mp4'
+    
+    print(f"Saving output to: {outname}\n")
 
     print('Reading audio\n')
     
@@ -140,7 +143,7 @@ if __name__ == '__main__':
 
     # Load pre-trained model
     print('\nLoading StyleGAN3 \n')
-    network_pkl = 'models/stylegan3-t-ffhqu-256x256.pkl'
+    network_pkl = 'models/stylegan3-r-afhqv2-512x512.pkl'
     print(f'Loading networks from "{network_pkl}"...')
     with dnnlib.util.open_url(network_pkl) as f:
         data = legacy.load_network_pkl(f)
@@ -157,7 +160,7 @@ if __name__ == '__main__':
     # --- PASS ALL ARGUMENTS TO UTILS ---
     w_vectors = generate_w_vectors(
         y, sr, 
-        walk_rate_sensitivity, # PASSED RENAME HERE
+        walk_rate_sensitivity, 
         pitch_sensitivity, 
         melodic_sensitivity, 
         sax_sensitivity, 
@@ -165,7 +168,7 @@ if __name__ == '__main__':
         truncation, 
         frame_length, 
         noise_floor_magnitude, 
-        jump_threshold, # PASSED NEW ARGUMENT HERE
+        jump_threshold, 
         NUM_WS, 
         W_DIM, 
         jitter, 
