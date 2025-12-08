@@ -178,7 +178,10 @@ if __name__ == '__main__':
     
     w_vectors = torch.Tensor(w_vectors) 
 
-    torch.mps.empty_cache()
+    if device.type == 'mps':
+        torch.mps.empty_cache()
+    elif device.type == 'cuda':
+        torch.cuda.empty_cache()
 
     # Generate frames in batches of batch_size
     print('Generating frames \n')
