@@ -83,7 +83,7 @@ def generate_w_vectors(y, sr,
     if w_avg_vec is None:
         w_avg_vec = np.zeros(w_dim, dtype=np.float32)
 
-    PERTURBATION_MAGNITUDE = 1.0 
+    PERTURBATION_MAGNITUDE = 1.8 
     NUM_ANCHORS = 6
 
     W_ANCHORS: List[np.ndarray] = []
@@ -102,7 +102,7 @@ def generate_w_vectors(y, sr,
     # ----------------------------------------------------
 
     # --- MOVEMENT SCALING COEFFICIENTS ---
-    BASE_WALK_RATE = 0.001 
+    BASE_WALK_RATE = 0.003
     RHYTHM_ACCELERATION_SCALE = walk_rate_sensitivity 
     CHROMA_ACCELERATION_SCALE = 0.05 
     LOUDNESS_VOLATILITY_FACTOR = 1.0 

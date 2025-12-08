@@ -143,7 +143,7 @@ if __name__ == '__main__':
 
     # Load pre-trained model
     print('\nLoading StyleGAN3 \n')
-    network_pkl = 'models/stylegan3-r-afhqv2-512x512.pkl'
+    network_pkl = 'models/lhq-256-stylegan3-t-25Mimg.pkl'
     print(f'Loading networks from "{network_pkl}"...')
     with dnnlib.util.open_url(network_pkl) as f:
         data = legacy.load_network_pkl(f)
@@ -177,6 +177,8 @@ if __name__ == '__main__':
     )
     
     w_vectors = torch.Tensor(w_vectors) 
+
+    torch.mps.empty_cache()
 
     # Generate frames in batches of batch_size
     print('Generating frames \n')
