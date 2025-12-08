@@ -83,8 +83,8 @@ def generate_w_vectors(y, sr,
     if w_avg_vec is None:
         w_avg_vec = np.zeros(w_dim, dtype=np.float32)
 
-    PERTURBATION_MAGNITUDE = 1.8 
-    NUM_ANCHORS = 6
+    PERTURBATION_MAGNITUDE = 5.0
+    NUM_ANCHORS = 200
 
     W_ANCHORS: List[np.ndarray] = []
     for _ in range(NUM_ANCHORS):
