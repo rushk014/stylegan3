@@ -107,7 +107,7 @@ def generate_w_vectors(y, sr,
     CHROMA_ACCELERATION_SCALE = 0.05 
     LOUDNESS_VOLATILITY_FACTOR = 1.0 
 
-    COLOR_BIAS_OFFSET = 0.40 # FINAL PSYCHEDELIC COLOR BIAS
+    COLOR_BIAS_OFFSET = 0.20 # FINAL PSYCHEDELIC COLOR BIAS
     
     # Jitter Vectors
     JITTER_VECTOR_COARSE = get_sensitivity(jitter=jitter)
